@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ניהול הכנסות בית הכנסת</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Heebo',sans-serif;background:#faf9f6;color:#2c2a25;min-height:100vh;-webkit-text-size-adjust:100%}
+input,select,button,textarea{font-family:'Heebo',sans-serif}
+.sync-bar{background:#2c2a25;color:#fff;padding:6px 12px;font-size:11px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:50}
+.sync-bar button{background:rgba(255,255,255,0.15);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:inherit}
+.sync-bar button:hover{background:rgba(255,255,255,0.25)}
+.sync-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-left:5px}
+@media(max-width:600px){
+  .stat-grid{grid-template-columns:1fr 1fr!important}
+  .filter-row{flex-direction:column!important}
+  .filter-row>*{flex:1 1 100%!important}
+  .dual-grid{grid-template-columns:1fr!important}
+  .modal-inner{padding:16px!important;margin:8px!important;max-height:95vh!important}
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {useState,useEffect,useCallback,useRef}=React;
+
+/* ============ CLOUD SYNC via JSONBin.io ============ */
+const CLOUD_CONFIG_KEY = "synagogue-cloud-config";
+const LOCAL_KEY = "synagogue-data-v3";
+const defaultData={members:[],purchases:[],occasions:[],expenses:[],payments:[]};
+const gid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const fc=n=>"\u20AA"+Number(n||0).toLocaleString("he-IL",{minimumFractionDigits:0});
+
+function getCloudConfig(){
+  try{const r=localStorage.getItem(CLOUD_CONFIG_KEY);return r?JSON.parse(r):null}catch{return null}
+}
+function setCloudConfig(cfg){localStorage.setItem(CLOUD_CONFIG_KEY,JSON.stringify(cfg))}
+
+async function cloudSave(data,cfg){
+  if(!cfg?.binId||!cfg?.apiKey)return false;
+  try{
+    const r=await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}`,{
+      method:"PUT",headers:{"Content-Type":"application/json","X-Master-Key":cfg.apiKey},
+      body:JSON.stringify(data)
+    });
+    return r.ok;
+  }catch{return false}
+}
+
+async function cloudLoad(cfg){
+  if(!cfg?.binId||!cfg?.apiKey)return null;
+  try{
+    const r=await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}/latest`,{
+      headers:{"X-Master-Key":cfg.apiKey}
+    });
+    if(!r.ok)return null;
+    const j=await r.json();
+    return j.record||null;
+  }catch{return null}
+}
+
+async function cloudCreate(apiKey, data){
+  try{
+    const r=await fetch("https://api.jsonbin.io/v3/b",{
+      method:"POST",headers:{"Content-Type":"application/json","X-Master-Key":apiKey,"X-Bin-Private":"true","X-Bin-Name":"synagogue-data"},
+      body:JSON.stringify(data)
+    });
+    if(!r.ok)return null;
+    const j=await r.json();
+    return j.metadata?.id||null;
+  }catch{return null}
+}
+
+function localLoad(){try{const r=localStorage.getItem(LOCAL_KEY);return r?JSON.parse(r):{...defaultData}}catch{return{...defaultData}}}
+function localSave(d){try{localStorage.setItem(LOCAL_KEY,JSON.stringify(d))}catch{}}
+
+/* ============ EXPORT ============ */
+const TABS=[
+  {id:"dashboard",label:"\u05E1\u05D9\u05DB\u05D5\u05DD",icon:"\u25C9"},
+  {id:"members",label:"\u05D7\u05D1\u05E8\u05D9\u05DD",icon:"\u2630"},
+  {id:"purchases",label:"\u05E8\u05DB\u05D9\u05E9\u05D5\u05EA",icon:"\u2726"},
+  {id:"expenses",label:"\u05D4\u05D5\u05E6\u05D0\u05D5\u05EA",icon:"\u25CB"},
+  {id:"occasions",label:"\u05DE\u05D5\u05E2\u05D3\u05D9\u05DD",icon:"\u25C6"},
+];
+const PRESET_OCCASIONS=["\u05E9\u05D1\u05EA","\u05E8\u05D0\u05E9 \u05D4\u05E9\u05E0\u05D4","\u05D9\u05D5\u05DD \u05DB\u05D9\u05E4\u05D5\u05E8","\u05E1\u05D5\u05DB\u05D5\u05EA","\u05E9\u05DE\u05D7\u05EA \u05EA\u05D5\u05E8\u05D4","\u05D7\u05E0\u05D5\u05DB\u05D4","\u05E4\u05D5\u05E8\u05D9\u05DD","\u05E4\u05E1\u05D7","\u05E9\u05D1\u05D5\u05E2\u05D5\u05EA","\u05D8\u05F3 \u05D1\u05D0\u05D1","\u05D1\u05E8 \u05DE\u05E6\u05D5\u05D5\u05D4","\u05D1\u05E8\u05D9\u05EA\u05D5\u05EA","\u05E9\u05D1\u05E2 \u05D1\u05E8\u05DB\u05D5\u05EA","\u05D4\u05D6\u05DB\u05E8\u05D4","\u05D0\u05D7\u05E8"];
+const EXPENSE_CATEGORIES=["\u05D7\u05E9\u05DE\u05DC","\u05EA\u05D7\u05D6\u05D5\u05E7\u05D4","\u05E9\u05DB\u05E8 \u05E8\u05D1","\u05E0\u05D9\u05E7\u05D9\u05D5\u05DF","\u05E6\u05D3\u05E7\u05D4","\u05E7\u05D9\u05D3\u05D5\u05E9","\u05D0\u05D9\u05E8\u05D5\u05E2\u05D9\u05DD","\u05D0\u05D7\u05E8"];
+
+function exportToExcel(data,type){
+  const BOM="\uFEFF";let csv="";
+  const{members,purchases,occasions,expenses,payments}=data;
+  const mn=id=>members.find(m=>m.id===id)?.name||"";
+  const on=id=>occasions.find(o=>o.id===id)?.name||"";
+  const gpa=pid=>(payments||[]).filter(p=>p.purchaseId===pid).reduce((s,p)=>s+p.amount,0);
+  if(type==="purchases"){csv="\u05E9\u05DD,\u05DE\u05D5\u05E2\u05D3,\u05EA\u05D9\u05D0\u05D5\u05E8,\u05E1\u05DB\u05D5\u05DD,\u05E9\u05D5\u05DC\u05DD,\u05D9\u05EA\u05E8\u05D4,\u05DE\u05E6\u05D1,\u05EA\u05D0\u05E8\u05D9\u05DA\n";purchases.forEach(p=>{const pd=gpa(p.id);const bl=p.amount-pd;const st=bl<=0?"\u05E9\u05D5\u05DC\u05DD":pd>0?"\u05D7\u05DC\u05E7\u05D9":"\u05D7\u05D5\u05D1";csv+=`"${mn(p.memberId)}","${on(p.occasionId)}","${p.description||""}",${p.amount},${pd},${bl},"${st}","${p.date||""}"\n`})}
+  else if(type==="members"){csv="\u05E9\u05DD,\u05D8\u05DC\u05E4\u05D5\u05DF,\u05E1\u05D4\u05F4\u05DB,\u05E9\u05D5\u05DC\u05DD,\u05D9\u05EA\u05E8\u05D4\n";members.forEach(m=>{const mp=purchases.filter(p=>p.memberId===m.id);const t=mp.reduce((s,p)=>s+p.amount,0);const pd=mp.reduce((s,p)=>s+gpa(p.id),0);csv+=`"${m.name}","${m.phone||""}",${t},${pd},${t-pd}\n`})}
+  else if(type==="expenses"){csv="\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4,\u05EA\u05D9\u05D0\u05D5\u05E8,\u05E1\u05DB\u05D5\u05DD,\u05EA\u05D0\u05E8\u05D9\u05DA\n";(expenses||[]).forEach(e=>{csv+=`"${e.category||""}","${e.description||""}",${e.amount},"${e.date||""}"\n`})}
+  else if(type==="payments"){csv="\u05E9\u05DD \u05D7\u05D1\u05E8,\u05EA\u05D9\u05D0\u05D5\u05E8 \u05E8\u05DB\u05D9\u05E9\u05D4,\u05E1\u05DB\u05D5\u05DD \u05EA\u05E9\u05DC\u05D5\u05DD,\u05EA\u05D0\u05E8\u05D9\u05DA,\u05D4\u05E2\u05E8\u05D4\n";(payments||[]).forEach(pm=>{const pu=purchases.find(p=>p.id===pm.purchaseId);csv+=`"${pu?mn(pu.memberId):""}","${pu?.description||""}",${pm.amount},"${pm.date||""}","${pm.note||""}"\n`})}
+  else if(type==="summary"){const tp=purchases.reduce((s,p)=>s+p.amount,0);const tpd=purchases.reduce((s,p)=>s+gpa(p.id),0);const te=(expenses||[]).reduce((s,e)=>s+e.amount,0);csv="\u05E1\u05D9\u05DB\u05D5\u05DD\n\n";csv+=`\u05E1\u05D4\u05F4\u05DB \u05E8\u05DB\u05D9\u05E9\u05D5\u05EA,${tp}\n\u05E9\u05D5\u05DC\u05DD,${tpd}\n\u05D7\u05D5\u05D1\u05D5\u05EA,${tp-tpd}\n\u05D4\u05D5\u05E6\u05D0\u05D5\u05EA,${te}\n\u05DE\u05D0\u05D6\u05DF,${tpd-te}\n`}
+  const blob=new Blob([BOM+csv],{type:"text/csv;charset=utf-8;"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;
+  const names={purchases:"\u05E8\u05DB\u05D9\u05E9\u05D5\u05EA",members:"\u05D7\u05D1\u05E8\u05D9\u05DD",expenses:"\u05D4\u05D5\u05E6\u05D0\u05D5\u05EA",payments:"\u05EA\u05E9\u05DC\u05D5\u05DE\u05D9\u05DD",summary:"\u05E1\u05D9\u05DB\u05D5\u05DD"};
+  a.download=`\u05D1\u05D9\u05EA_\u05DB\u05E0\u05E1\u05EA_${names[type]||type}_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(url);
+}
+
+/* ============ APP ============ */
+function App(){
+  const[data,setData]=useState(null);
+  const[tab,setTab]=useState("dashboard");
+  const[search,setSearch]=useState("");
+  const[showAddMember,setShowAddMember]=useState(false);
+  const[showAddPurchase,setShowAddPurchase]=useState(false);
+  const[showAddOccasion,setShowAddOccasion]=useState(false);
+  const[showAddExpense,setShowAddExpense]=useState(false);
+  const[showPayment,setShowPayment]=useState(null);
+  const[editingPurchase,setEditingPurchase]=useState(null);
+  const[filterMember,setFilterMember]=useState("");
+  const[filterOccasion,setFilterOccasion]=useState("");
+  const[filterPaid,setFilterPaid]=useState("all");
+  const[memberDetail,setMemberDetail]=useState(null);
+  const[showExport,setShowExport]=useState(false);
+  const[showCloudSetup,setShowCloudSetup]=useState(false);
+  const[cloudCfg,setCloudCfg]=useState(null);
+  const[syncStatus,setSyncStatus]=useState("local");
+  const[lastSync,setLastSync]=useState(null);
+
+  useEffect(()=>{
+    const cfg=getCloudConfig();
+    setCloudCfg(cfg);
+    if(cfg?.binId&&cfg?.apiKey){
+      setSyncStatus("loading");
+      cloudLoad(cfg).then(d=>{
+        if(d&&d.members){
+          if(!d.payments)d.payments=[];if(!d.expenses)d.expenses=[];
+          setData(d);localSave(d);setSyncStatus("synced");setLastSync(new Date());
+        }else{
+          const local=localLoad();setData(local);setSyncStatus("local");
+        }
+      });
+    }else{
+      setData(localLoad());
+    }
+  },[]);
+
+  const persist=useCallback((updated)=>{
+    setData(updated);localSave(updated);
+    const cfg=getCloudConfig();
+    if(cfg?.binId&&cfg?.apiKey){
+      setSyncStatus("saving");
+      cloudSave(updated,cfg).then(ok=>{
+        setSyncStatus(ok?"synced":"error");
+        if(ok)setLastSync(new Date());
+      });
+    }
+  },[]);
+
+  function doSync(){
+    const cfg=getCloudConfig();
+    if(!cfg?.binId||!cfg?.apiKey){setShowCloudSetup(true);return}
+    setSyncStatus("loading");
+    cloudLoad(cfg).then(d=>{
+      if(d&&d.members){if(!d.payments)d.payments=[];if(!d.expenses)d.expenses=[];setData(d);localSave(d);setSyncStatus("synced");setLastSync(new Date())}
+      else setSyncStatus("error");
+    });
+  }
+
+  if(!data)return React.createElement("div",{style:{padding:40,textAlign:"center",color:"#8a8474"}},"\u05D8\u05D5\u05E2\u05DF...");
+  const{members,purchases,occasions,expenses,payments}=data;
+
+  function getPaidAmount(pid){return(payments||[]).filter(p=>p.purchaseId===pid).reduce((s,p)=>s+p.amount,0)}
+  function getBalance(pid){const p=purchases.find(x=>x.id===pid);if(!p)return 0;const bal=p.amount-getPaidAmount(pid);return Math.max(0,bal)}
+  function getStatus(pid){const p=purchases.find(x=>x.id===pid);if(!p)return"\u05D7\u05D5\u05D1";const paid=getPaidAmount(pid);if(paid>=p.amount)return"\u05E9\u05D5\u05DC\u05DD";if(paid>0)return"\u05D7\u05DC\u05E7\u05D9";return"\u05D7\u05D5\u05D1"}
+
+  function getMemberStats(mid){
+    const mp=purchases.filter(p=>p.memberId===mid);
+    const total=mp.reduce((s,p)=>s+p.amount,0);
+    const paid=mp.reduce((s,p)=>s+Math.min(p.amount,getPaidAmount(p.id)),0);
+    const debt=total-paid;
+    return{paid,debt:Math.max(0,debt),total,count:mp.length};
+  }
+
+  const totalPurchases=purchases.reduce((s,p)=>s+p.amount,0);
+  const totalPaid=purchases.reduce((s,p)=>s+Math.min(p.amount,getPaidAmount(p.id)),0);
+  const totalDebt=totalPurchases-totalPaid;
+  const totalExpenses=(expenses||[]).reduce((s,e)=>s+e.amount,0);
+
+  function addMember(name,phone){if(!name.trim())return;persist({...data,members:[...members,{id:gid(),name:name.trim(),phone:phone.trim(),createdAt:new Date().toISOString()}]});setShowAddMember(false)}
+  function deleteMember(id){if(!confirm("\u05DC\u05DE\u05D7\u05D5\u05E7 \u05D0\u05EA \u05D4\u05D7\u05D1\u05E8 \u05D5\u05DB\u05DC \u05D4\u05E0\u05EA\u05D5\u05E0\u05D9\u05DD?"))return;const pids=purchases.filter(p=>p.memberId===id).map(p=>p.id);persist({...data,members:members.filter(m=>m.id!==id),purchases:purchases.filter(p=>p.memberId!==id),payments:(payments||[]).filter(p=>!pids.includes(p.purchaseId))});if(memberDetail===id)setMemberDetail(null)}
+  function addOccasion(name){if(!name.trim()||occasions.find(o=>o.name===name.trim()))return;persist({...data,occasions:[...occasions,{id:gid(),name:name.trim()}]});setShowAddOccasion(false)}
+  function deleteOccasion(id){if(!confirm("\u05DC\u05DE\u05D7\u05D5\u05E7?"))return;persist({...data,occasions:occasions.filter(o=>o.id!==id)})}
+  function addPurchase(mid,oid,amount,desc,date){if(!mid||!amount)return;persist({...data,purchases:[...purchases,{id:gid(),memberId:mid,occasionId:oid||null,amount:Number(amount),description:desc.trim(),date:date||new Date().toISOString().slice(0,10),createdAt:new Date().toISOString()}]});setShowAddPurchase(false)}
+  function deletePurchase(id){persist({...data,purchases:purchases.filter(p=>p.id!==id),payments:(payments||[]).filter(p=>p.purchaseId!==id)})}
+  function updatePurchase(id,u){persist({...data,purchases:purchases.map(p=>p.id===id?{...p,...u}:p)});setEditingPurchase(null)}
+  function addPayment(purchaseId,amount,date,note){
+    const num=Number(amount);if(!num||num<=0)return;
+    const bal=getBalance(purchaseId);
+    const cappedAmount=Math.min(num,bal);
+    if(cappedAmount<=0)return;
+    persist({...data,payments:[...(payments||[]),{id:gid(),purchaseId,amount:cappedAmount,date:date||new Date().toISOString().slice(0,10),note:note||"",createdAt:new Date().toISOString()}]});
+    setShowPayment(null);
+  }
+  function deletePayment(id){persist({...data,payments:(payments||[]).filter(p=>p.id!==id)})}
+  function addExpense(cat,desc,amount,date){if(!amount)return;persist({...data,expenses:[...(expenses||[]),{id:gid(),category:cat,description:desc.trim(),amount:Number(amount),date:date||new Date().toISOString().slice(0,10),createdAt:new Date().toISOString()}]});setShowAddExpense(false)}
+  function deleteExpense(id){persist({...data,expenses:(expenses||[]).filter(e=>e.id!==id)})}
+
+  const filteredPurchases=purchases.filter(p=>!filterMember||p.memberId===filterMember).filter(p=>!filterOccasion||p.occasionId===filterOccasion).filter(p=>{if(filterPaid==="all")return true;const s=getStatus(p.id);if(filterPaid==="paid")return s==="\u05E9\u05D5\u05DC\u05DD";if(filterPaid==="partial")return s==="\u05D7\u05DC\u05E7\u05D9";return s==="\u05D7\u05D5\u05D1"}).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  const mn=id=>members.find(m=>m.id===id)?.name||"\u2014";
+  const on=id=>occasions.find(o=>o.id===id)?.name||"\u2014";
+
+  const S={
+    app:{maxWidth:900,margin:"0 auto",padding:"0 12px 80px"},
+    header:{textAlign:"center",padding:"20px 0 4px"},
+    title:{fontSize:22,fontWeight:700,letterSpacing:"-0.5px"},
+    subtitle:{fontSize:11,color:"#8a8474",marginTop:2},
+    tabs:{display:"flex",borderBottom:"1.5px solid #e8e4dc",marginBottom:14,marginTop:8,overflowX:"auto"},
+    tab:a=>({flex:"0 0 auto",padding:"8px 11px",textAlign:"center",fontSize:12,fontWeight:a?600:400,color:a?"#2c2a25":"#8a8474",borderBottom:a?"2px solid #2c2a25":"2px solid transparent",cursor:"pointer",background:"none",border:"none",fontFamily:"inherit",whiteSpace:"nowrap"}),
+    card:{background:"#fff",border:"1px solid #e8e4dc",borderRadius:10,padding:"12px 14px",marginBottom:8},
+    statGrid:{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:8,marginBottom:14},
+    stat:c=>({background:c==="green"?"#f0f7ee":c==="red"?"#fdf0ee":c==="blue"?"#eef4fb":"#f5f3ef",borderRadius:10,padding:"10px 12px",textAlign:"center"}),
+    statLabel:c=>({fontSize:10,color:c==="green"?"#3b7a2d":c==="red"?"#b5412a":c==="blue"?"#2a5ea3":"#8a8474",marginBottom:2,fontWeight:500}),
+    statValue:c=>({fontSize:18,fontWeight:700,color:c==="green"?"#2d6b1f":c==="red"?"#a33620":c==="blue"?"#1a4a8a":"#2c2a25"}),
+    btn:{background:"#2c2a25",color:"#fff",border:"none",borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"},
+    btnSm:{background:"#2c2a25",color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"},
+    btnOutline:{background:"none",color:"#2c2a25",border:"1px solid #d4cfc5",borderRadius:8,padding:"7px 14px",fontSize:12,cursor:"pointer",fontFamily:"inherit"},
+    btnDanger:{background:"none",color:"#b5412a",border:"none",padding:"4px 8px",fontSize:11,cursor:"pointer",fontFamily:"inherit"},
+    input:{width:"100%",padding:"8px 10px",border:"1px solid #d4cfc5",borderRadius:8,fontSize:14,fontFamily:"inherit",direction:"rtl",boxSizing:"border-box"},
+    select:{width:"100%",padding:"8px 10px",border:"1px solid #d4cfc5",borderRadius:8,fontSize:14,fontFamily:"inherit",direction:"rtl",background:"#fff",boxSizing:"border-box"},
+    label:{fontSize:11,fontWeight:600,color:"#5c584f",marginBottom:3,display:"block"},
+    badge:s=>({display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:10,fontWeight:600,background:s==="\u05E9\u05D5\u05DC\u05DD"?"#e8f5e1":s==="\u05D7\u05DC\u05E7\u05D9"?"#fff3e0":"#fde8e4",color:s==="\u05E9\u05D5\u05DC\u05DD"?"#2d6b1f":s==="\u05D7\u05DC\u05E7\u05D9"?"#b8730a":"#a33620"}),
+    overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,padding:8},
+    modal:{background:"#fff",borderRadius:14,padding:20,width:"100%",maxWidth:420,direction:"rtl",fontFamily:"'Heebo',sans-serif",maxHeight:"92vh",overflowY:"auto"},
+    modalTitle:{fontSize:17,fontWeight:700,marginBottom:14},
+    row:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #f0ede6"},
+    field:{marginBottom:10},
+  };
+
+  function Modal({show,onClose,title,children}){if(!show)return null;return React.createElement("div",{style:S.overlay,onClick:onClose},React.createElement("div",{className:"modal-inner",style:S.modal,onClick:e=>e.stopPropagation()},React.createElement("div",{style:S.modalTitle},title),children))}
+
+  /* ---- Cloud Setup Modal ---- */
+  function CloudSetupModal(){
+    const[apiKey,setApiKey]=useState(cloudCfg?.apiKey||"");
+    const[binId,setBinId]=useState(cloudCfg?.binId||"");
+    const[status,setStatus]=useState("");
+    const[step,setStep]=useState(cloudCfg?.binId?"connected":"start");
+
+    async function handleConnect(){
+      if(!apiKey.trim()){setStatus("\u05D4\u05DB\u05E0\u05E1 API Key");return}
+      setStatus("\u05DE\u05EA\u05D7\u05D1\u05E8...");
+      if(binId.trim()){
+        const cfg={apiKey:apiKey.trim(),binId:binId.trim()};
+        const d=await cloudLoad(cfg);
+        if(d){setCloudConfig(cfg);setCloudCfg(cfg);if(d.members){if(!d.payments)d.payments=[];if(!d.expenses)d.expenses=[];setData(d);localSave(d)}setSyncStatus("synced");setLastSync(new Date());setShowCloudSetup(false);setStatus("")}
+        else setStatus("\u05E9\u05D2\u05D9\u05D0\u05D4 \u2014 \u05D1\u05D3\u05D5\u05E7 API Key \u05D5-Bin ID");
+      }else{
+        const newBin=await cloudCreate(apiKey.trim(),data);
+        if(newBin){const cfg={apiKey:apiKey.trim(),binId:newBin};setCloudConfig(cfg);setCloudCfg(cfg);setBinId(newBin);setSyncStatus("synced");setLastSync(new Date());setStatus("\u05E0\u05D5\u05E6\u05E8 \u05D1\u05D4\u05E6\u05DC\u05D7\u05D4! Bin ID: "+newBin);setStep("connected")}
+        else setStatus("\u05E9\u05D2\u05D9\u05D0\u05D4 \u2014 \u05D1\u05D3\u05D5\u05E7 API Key");
+      }
+    }
+
+    function handleDisconnect(){
+      localStorage.removeItem(CLOUD_CONFIG_KEY);setCloudCfg(null);setSyncStatus("local");setStep("start");setBinId("");setStatus("\u05E0\u05D5\u05EA\u05E7");
+    }
+
+    return React.createElement(Modal,{show:showCloudSetup,onClose:()=>setShowCloudSetup(false),title:"\u05E1\u05E0\u05DB\u05E8\u05D5\u05DF \u05E2\u05E0\u05DF"},
+      React.createElement("div",{style:{fontSize:12,color:"#8a8474",marginBottom:12,lineHeight:1.6}},
+        "\u05DB\u05D3\u05D9 \u05DC\u05E1\u05E0\u05DB\u05E8\u05DF \u05D1\u05D9\u05DF \u05E0\u05D9\u05D9\u05D3 \u05DC\u05DE\u05D7\u05E9\u05D1:",
+        React.createElement("br"),
+        "1. \u05D4\u05D9\u05DB\u05E0\u05E1 \u05DC-",React.createElement("a",{href:"https://jsonbin.io",target:"_blank",style:{color:"#2a5ea3"}},"jsonbin.io")," (\u05D7\u05D9\u05E0\u05DD)",
+        React.createElement("br"),
+        "2. \u05D4\u05E2\u05EA\u05E7 \u05D0\u05EA \u05D4-API Key \u05DE\u05D3\u05E3 \u05D4-Settings",
+        React.createElement("br"),
+        "3. \u05D4\u05D3\u05D1\u05E7 \u05DC\u05DE\u05D8\u05D4 \u05D5\u05DC\u05D7\u05E5 \u05D7\u05D1\u05E8"
+      ),
+      React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"API Key (\u05DE-jsonbin.io)"),React.createElement("input",{style:{...S.input,direction:"ltr",fontSize:12},value:apiKey,onChange:e=>setApiKey(e.target.value),placeholder:"$2a$10..."})),
+      React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"Bin ID (\u05D4\u05E9\u05D0\u05E8 \u05E8\u05D9\u05E7 \u05DC\u05D7\u05D9\u05D1\u05D5\u05E8 \u05DE\u05DE\u05DB\u05E9\u05D9\u05E8 \u05E9\u05E0\u05D9)"),React.createElement("input",{style:{...S.input,direction:"ltr",fontSize:12},value:binId,onChange:e=>setBinId(e.target.value),placeholder:"\u05D9\u05D9\u05D5\u05E6\u05E8 \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA \u05D0\u05DD \u05E8\u05D9\u05E7"})),
+      status&&React.createElement("div",{style:{fontSize:12,color:status.includes("\u05E9\u05D2\u05D9\u05D0\u05D4")?"#a33620":"#2d6b1f",marginBottom:8}},status),
+      React.createElement("div",{style:{display:"flex",gap:8}},
+        React.createElement("button",{style:S.btn,onClick:handleConnect},binId?"\u05D4\u05EA\u05D7\u05D1\u05E8":"\u05E6\u05D5\u05E8 \u05D7\u05D3\u05E9 \u05D5\u05D4\u05EA\u05D7\u05D1\u05E8"),
+        cloudCfg?.binId&&React.createElement("button",{style:{...S.btnOutline,color:"#b5412a",borderColor:"#e8b4a8"},onClick:handleDisconnect},"\u05E0\u05EA\u05E7"),
+        React.createElement("button",{style:S.btnOutline,onClick:()=>setShowCloudSetup(false)},"\u05E1\u05D2\u05D5\u05E8")
+      )
+    );
+  }
+
+  /* ---- All other modals & tabs same as v2 but with fixes ---- */
+  function AddMemberModal(){const[n,sN]=useState("");const[p,sP]=useState("");const ref=useRef();useEffect(()=>ref.current?.focus(),[]);return React.createElement(Modal,{show:showAddMember,onClose:()=>setShowAddMember(false),title:"\u05D4\u05D5\u05E1\u05E4\u05EA \u05D7\u05D1\u05E8"},React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05E9\u05DD"),React.createElement("input",{ref,style:S.input,value:n,onChange:e=>sN(e.target.value),placeholder:"\u05D9\u05E9\u05E8\u05D0\u05DC \u05D9\u05E9\u05E8\u05D0\u05DC\u05D9"})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05D8\u05DC\u05E4\u05D5\u05DF"),React.createElement("input",{style:S.input,value:p,onChange:e=>sP(e.target.value),placeholder:"050-0000000"})),React.createElement("div",{style:{display:"flex",gap:8}},React.createElement("button",{style:S.btn,onClick:()=>addMember(n,p)},"\u05D4\u05D5\u05E1\u05E3"),React.createElement("button",{style:S.btnOutline,onClick:()=>setShowAddMember(false)},"\u05D1\u05D9\u05D8\u05D5\u05DC")))}
+  function AddOccasionModal(){const[n,sN]=useState("");const ex=occasions.map(o=>o.name);const av=PRESET_OCCASIONS.filter(p=>!ex.includes(p));return React.createElement(Modal,{show:showAddOccasion,onClose:()=>setShowAddOccasion(false),title:"\u05D4\u05D5\u05E1\u05E4\u05EA \u05DE\u05D5\u05E2\u05D3"},av.length>0&&React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12}},av.map(p=>React.createElement("button",{key:p,style:{...S.btnOutline,padding:"5px 12px",fontSize:12},onClick:()=>addOccasion(p)},p))),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05DE\u05D5\u05E2\u05D3 \u05DE\u05D5\u05EA\u05D0\u05DD"),React.createElement("input",{style:S.input,value:n,onChange:e=>sN(e.target.value)})),React.createElement("div",{style:{display:"flex",gap:8}},React.createElement("button",{style:S.btn,onClick:()=>addOccasion(n)},"\u05D4\u05D5\u05E1\u05E3"),React.createElement("button",{style:S.btnOutline,onClick:()=>setShowAddOccasion(false)},"\u05D1\u05D9\u05D8\u05D5\u05DC")))}
+  function AddPurchaseModal(){const[mid,sMid]=useState("");const[oid,sOid]=useState("");const[amt,sAmt]=useState("");const[desc,sDesc]=useState("");const[date,sDate]=useState(new Date().toISOString().slice(0,10));return React.createElement(Modal,{show:showAddPurchase,onClose:()=>setShowAddPurchase(false),title:"\u05D4\u05D5\u05E1\u05E4\u05EA \u05E8\u05DB\u05D9\u05E9\u05D4"},React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05D7\u05D1\u05E8"),React.createElement("select",{style:S.select,value:mid,onChange:e=>sMid(e.target.value)},React.createElement("option",{value:""},"\u05D1\u05D7\u05E8..."),members.sort((a,b)=>a.name.localeCompare(b.name,"he")).map(m=>React.createElement("option",{key:m.id,value:m.id},m.name)))),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05DE\u05D5\u05E2\u05D3"),React.createElement("select",{style:S.select,value:oid,onChange:e=>sOid(e.target.value)},React.createElement("option",{value:""},"\u05DB\u05DC\u05DC\u05D9"),occasions.map(o=>React.createElement("option",{key:o.id,value:o.id},o.name)))),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05E1\u05DB\u05D5\u05DD (\u20AA)"),React.createElement("input",{style:S.input,type:"number",value:amt,onChange:e=>sAmt(e.target.value)})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D9\u05D0\u05D5\u05E8"),React.createElement("input",{style:S.input,value:desc,onChange:e=>sDesc(e.target.value),placeholder:"\u05E2\u05DC\u05D9\u05D4, \u05E0\u05D3\u05E8..."})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D0\u05E8\u05D9\u05DA"),React.createElement("input",{style:S.input,type:"date",value:date,onChange:e=>sDate(e.target.value)})),React.createElement("div",{style:{display:"flex",gap:8}},React.createElement("button",{style:S.btn,onClick:()=>addPurchase(mid,oid,amt,desc,date)},"\u05D4\u05D5\u05E1\u05E3"),React.createElement("button",{style:S.btnOutline,onClick:()=>setShowAddPurchase(false)},"\u05D1\u05D9\u05D8\u05D5\u05DC")))}
+  function AddExpenseModal(){const[cat,sCat]=useState(EXPENSE_CATEGORIES[0]);const[desc,sDesc]=useState("");const[amt,sAmt]=useState("");const[date,sDate]=useState(new Date().toISOString().slice(0,10));return React.createElement(Modal,{show:showAddExpense,onClose:()=>setShowAddExpense(false),title:"\u05D4\u05D5\u05E1\u05E4\u05EA \u05D4\u05D5\u05E6\u05D0\u05D4"},React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4"),React.createElement("select",{style:S.select,value:cat,onChange:e=>sCat(e.target.value)},EXPENSE_CATEGORIES.map(c=>React.createElement("option",{key:c,value:c},c)))),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D9\u05D0\u05D5\u05E8"),React.createElement("input",{style:S.input,value:desc,onChange:e=>sDesc(e.target.value),placeholder:"\u05E4\u05E8\u05D8\u05D9\u05DD..."})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05E1\u05DB\u05D5\u05DD (\u20AA)"),React.createElement("input",{style:S.input,type:"number",value:amt,onChange:e=>sAmt(e.target.value)})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D0\u05E8\u05D9\u05DA"),React.createElement("input",{style:S.input,type:"date",value:date,onChange:e=>sDate(e.target.value)})),React.createElement("div",{style:{display:"flex",gap:8}},React.createElement("button",{style:S.btn,onClick:()=>addExpense(cat,desc,amt,date)},"\u05D4\u05D5\u05E1\u05E3"),React.createElement("button",{style:S.btnOutline,onClick:()=>setShowAddExpense(false)},"\u05D1\u05D9\u05D8\u05D5\u05DC")))}
+
+  function PaymentModal({purchase:p}){
+    const balance=getBalance(p.id);const alreadyPaid=getPaidAmount(p.id);
+    const[amt,sAmt]=useState(balance>0?String(balance):"");const[date,sDate]=useState(new Date().toISOString().slice(0,10));const[note,sNote]=useState("");
+    const pms=(payments||[]).filter(pm=>pm.purchaseId===p.id).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    return React.createElement(Modal,{show:true,onClose:()=>setShowPayment(null),title:"\u05EA\u05E9\u05DC\u05D5\u05DD \u2014 "+mn(p.memberId)},
+      React.createElement("div",{style:{background:"#f5f3ef",borderRadius:8,padding:12,marginBottom:12,fontSize:13}},
+        React.createElement("div",{style:{display:"flex",justifyContent:"space-between"}},React.createElement("span",null,"\u05E1\u05DB\u05D5\u05DD \u05E8\u05DB\u05D9\u05E9\u05D4"),React.createElement("span",{style:{fontWeight:600}},fc(p.amount))),
+        React.createElement("div",{style:{display:"flex",justifyContent:"space-between"}},React.createElement("span",null,"\u05E9\u05D5\u05DC\u05DD \u05E2\u05D3 \u05DB\u05D4"),React.createElement("span",{style:{fontWeight:600,color:"#2d6b1f"}},fc(alreadyPaid))),
+        React.createElement("div",{style:{display:"flex",justifyContent:"space-between",borderTop:"1px solid #e8e4dc",paddingTop:6,marginTop:6}},React.createElement("span",{style:{fontWeight:600}},"\u05D9\u05EA\u05E8\u05D4"),React.createElement("span",{style:{fontWeight:700,color:balance>0?"#a33620":"#2d6b1f"}},fc(balance)))
+      ),
+      balance>0&&React.createElement("div",null,
+        React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:8}},"\u05D4\u05D5\u05E1\u05E3 \u05EA\u05E9\u05DC\u05D5\u05DD"),
+        React.createElement("div",{style:{display:"flex",gap:6,marginBottom:6}},
+          React.createElement("div",{style:{flex:1}},React.createElement("input",{style:S.input,type:"number",value:amt,onChange:e=>sAmt(e.target.value),placeholder:"\u05E1\u05DB\u05D5\u05DD",max:balance})),
+          React.createElement("div",{style:{flex:1}},React.createElement("input",{style:S.input,type:"date",value:date,onChange:e=>sDate(e.target.value)}))),
+        Number(amt)>balance&&React.createElement("div",{style:{fontSize:11,color:"#b5412a",marginBottom:4}},"\u05DC\u05D0 \u05E0\u05D9\u05EA\u05DF \u05DC\u05E9\u05DC\u05DD \u05DE\u05E2\u05DC \u05D4\u05D9\u05EA\u05E8\u05D4 ("+fc(balance)+")"),
+        React.createElement("div",{style:{display:"flex",gap:6,marginBottom:10}},
+          React.createElement("input",{style:{...S.input,flex:1},value:note,onChange:e=>sNote(e.target.value),placeholder:"\u05D4\u05E2\u05E8\u05D4 (\u05D0\u05D5\u05E4\u05E6\u05D9\u05D5\u05E0\u05DC\u05D9)"}),
+          React.createElement("button",{style:S.btnSm,onClick:()=>addPayment(p.id,amt,date,note)},"\u05E9\u05DC\u05DD"))
+      ),
+      pms.length>0&&React.createElement("div",null,
+        React.createElement("div",{style:{fontSize:12,fontWeight:600,color:"#8a8474",marginTop:8,marginBottom:6}},"\u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05D9\u05EA \u05EA\u05E9\u05DC\u05D5\u05DE\u05D9\u05DD"),
+        pms.map(pm=>React.createElement("div",{key:pm.id,style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:"1px solid #f0ede6",fontSize:12}},
+          React.createElement("div",null,React.createElement("span",{style:{color:"#2d6b1f",fontWeight:600}},fc(pm.amount)),React.createElement("span",{style:{color:"#8a8474",marginRight:6}},pm.date),pm.note&&React.createElement("span",{style:{color:"#8a8474"}}," \u00B7 "+pm.note)),
+          React.createElement("button",{style:S.btnDanger,onClick:()=>deletePayment(pm.id)},"\u2715")))),
+      React.createElement("div",{style:{marginTop:10}},React.createElement("button",{style:S.btnOutline,onClick:()=>setShowPayment(null)},"\u05E1\u05D2\u05D5\u05E8"))
+    );
+  }
+
+  function EditPurchaseModal({purchase:p}){const[amt,sAmt]=useState(p.amount);const[desc,sDesc]=useState(p.description||"");const[oid,sOid]=useState(p.occasionId||"");const[date,sDate]=useState(p.date||"");return React.createElement(Modal,{show:true,onClose:()=>setEditingPurchase(null),title:"\u05E2\u05E8\u05D9\u05DB\u05D4 \u2014 "+mn(p.memberId)},React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05E1\u05DB\u05D5\u05DD"),React.createElement("input",{style:S.input,type:"number",value:amt,onChange:e=>sAmt(e.target.value)})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05DE\u05D5\u05E2\u05D3"),React.createElement("select",{style:S.select,value:oid,onChange:e=>sOid(e.target.value)},React.createElement("option",{value:""},"\u05DB\u05DC\u05DC\u05D9"),occasions.map(o=>React.createElement("option",{key:o.id,value:o.id},o.name)))),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D9\u05D0\u05D5\u05E8"),React.createElement("input",{style:S.input,value:desc,onChange:e=>sDesc(e.target.value)})),React.createElement("div",{style:S.field},React.createElement("label",{style:S.label},"\u05EA\u05D0\u05E8\u05D9\u05DA"),React.createElement("input",{style:S.input,type:"date",value:date,onChange:e=>sDate(e.target.value)})),React.createElement("div",{style:{display:"flex",gap:8}},React.createElement("button",{style:S.btn,onClick:()=>updatePurchase(p.id,{amount:Number(amt),description:desc,occasionId:oid||null,date})},"\u05E9\u05DE\u05D5\u05E8"),React.createElement("button",{style:S.btnOutline,onClick:()=>setEditingPurchase(null)},"\u05D1\u05D9\u05D8\u05D5\u05DC")))}
+
+  function MemberDetailModal({memberId:mid}){const m=members.find(x=>x.id===mid);if(!m)return null;const mp=purchases.filter(p=>p.memberId===mid).sort((a,b)=>(b.date||"").localeCompare(a.date||""));const stats=getMemberStats(mid);return React.createElement(Modal,{show:true,onClose:()=>setMemberDetail(null),title:m.name},m.phone&&React.createElement("div",{style:{fontSize:12,color:"#8a8474",marginTop:-10,marginBottom:12}},m.phone),React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:14}},React.createElement("div",{style:S.stat("green")},React.createElement("div",{style:S.statLabel("green")},"\u05E9\u05D5\u05DC\u05DD"),React.createElement("div",{style:{...S.statValue("green"),fontSize:16}},fc(stats.paid))),React.createElement("div",{style:S.stat("red")},React.createElement("div",{style:S.statLabel("red")},"\u05D7\u05D5\u05D1"),React.createElement("div",{style:{...S.statValue("red"),fontSize:16}},fc(stats.debt))),React.createElement("div",{style:S.stat("gray")},React.createElement("div",{style:S.statLabel("gray")},"\u05E1\u05D4\u05F4\u05DB"),React.createElement("div",{style:{...S.statValue("gray"),fontSize:16}},fc(stats.total)))),mp.length===0?React.createElement("div",{style:{textAlign:"center",color:"#8a8474",padding:16,fontSize:13}},"\u05D0\u05D9\u05DF \u05E8\u05DB\u05D9\u05E9\u05D5\u05EA"):mp.map(p=>{const st=getStatus(p.id);const bal=getBalance(p.id);const pd=Math.min(p.amount,getPaidAmount(p.id));return React.createElement("div",{key:p.id,style:{...S.row,gap:6,flexWrap:"wrap"}},React.createElement("div",{style:{flex:1,minWidth:120}},React.createElement("div",{style:{fontSize:13,fontWeight:500}},p.description||on(p.occasionId)),React.createElement("div",{style:{fontSize:10,color:"#8a8474"}},p.date)),React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},React.createElement("div",{style:{textAlign:"left"}},React.createElement("div",{style:{fontSize:14,fontWeight:600}},fc(p.amount)),pd>0&&bal>0&&React.createElement("div",{style:{fontSize:10,color:"#b8730a"}},"\u05E9\u05D5\u05DC\u05DD "+fc(pd))),React.createElement("span",{style:S.badge(st)},st),bal>0&&React.createElement("button",{style:{...S.btnSm,padding:"3px 8px",fontSize:10},onClick:()=>{setMemberDetail(null);setShowPayment(p)}},"\u05E9\u05DC\u05DD")))}))}
+
+  function ExportModal(){return React.createElement(Modal,{show:showExport,onClose:()=>setShowExport(false),title:"\u05D9\u05D9\u05E6\u05D5\u05D0 \u05DC\u05D0\u05E7\u05E1\u05DC"},React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:8}},React.createElement("button",{style:S.btnOutline,onClick:()=>{exportToExcel(data,"purchases");setShowExport(false)}},"\u05E8\u05DB\u05D9\u05E9\u05D5\u05EA \u2014 \u05DB\u05DC \u05D4\u05E8\u05DB\u05D9\u05E9\u05D5\u05EA"),React.createElement("button",{style:S.btnOutline,onClick:()=>{exportToExcel(data,"members");setShowExport(false)}},"\u05D7\u05D1\u05E8\u05D9\u05DD \u2014 \u05E1\u05D9\u05DB\u05D5\u05DD \u05DC\u05DB\u05DC \u05D7\u05D1\u05E8"),React.createElement("button",{style:S.btnOutline,onClick:()=>{exportToExcel(data,"expenses");setShowExport(false)}},"\u05D4\u05D5\u05E6\u05D0\u05D5\u05EA"),React.createElement("button",{style:S.btnOutline,onClick:()=>{exportToExcel(data,"payments");setShowExport(false)}},"\u05EA\u05E9\u05DC\u05D5\u05DE\u05D9\u05DD \u2014 \u05D4\u05D9\u05E1\u05D8\u05D5\u05E8\u05D9\u05D9\u05EA \u05EA\u05E9\u05DC\u05D5\u05DE\u05D9\u05DD"),React.createElement("button",{style:{...S.btn,marginTop:4},onClick:()=>{exportToExcel(data,"summary");setShowExport(false)}},"\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9"),React.createElement("div",{style:{fontSize:11,color:"#8a8474",marginTop:6}},"\u05E0\u05E4\u05EA\u05D7 \u05D1\u05D0\u05E7\u05E1\u05DC / Google Sheets")))}
+
+  /* ---- TABS ---- */
+  function Dashboard(){const topDebtors=members.map(m=>({...m,...getMemberStats(m.id)})).filter(m=>m.debt>0).sort((a,b)=>b.debt-a.debt).slice(0,8);const occasionStats=occasions.map(o=>{const op=purchases.filter(p=>p.occasionId===o.id);const inc=op.reduce((s,p)=>s+Math.min(p.amount,getPaidAmount(p.id)),0);const debt=op.reduce((s,p)=>s+getBalance(p.id),0);return{...o,income:inc,debt,total:inc+debt}}).filter(o=>o.total>0).sort((a,b)=>b.total-a.total);return React.createElement("div",null,React.createElement("div",{className:"stat-grid",style:{...S.statGrid,gridTemplateColumns:"repeat(4,minmax(0,1fr))"}},React.createElement("div",{style:S.stat("green")},React.createElement("div",{style:S.statLabel("green")},"\u05D4\u05DB\u05E0\u05E1\u05D5\u05EA"),React.createElement("div",{style:S.statValue("green")},fc(totalPaid))),React.createElement("div",{style:S.stat("red")},React.createElement("div",{style:S.statLabel("red")},"\u05D7\u05D5\u05D1\u05D5\u05EA"),React.createElement("div",{style:S.statValue("red")},fc(totalDebt))),React.createElement("div",{style:S.stat("blue")},React.createElement("div",{style:S.statLabel("blue")},"\u05D4\u05D5\u05E6\u05D0\u05D5\u05EA"),React.createElement("div",{style:S.statValue("blue")},fc(totalExpenses))),React.createElement("div",{style:S.stat(totalPaid-totalExpenses>=0?"green":"red")},React.createElement("div",{style:S.statLabel(totalPaid-totalExpenses>=0?"green":"red")},"\u05DE\u05D0\u05D6\u05DF"),React.createElement("div",{style:S.statValue(totalPaid-totalExpenses>=0?"green":"red")},fc(totalPaid-totalExpenses)))),React.createElement("div",{className:"dual-grid",style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}},React.createElement("div",{style:S.card},React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:8}},"\u05D7\u05D9\u05D9\u05D1\u05D9\u05DD \u05D2\u05D3\u05D5\u05DC\u05D9\u05DD"),topDebtors.length===0?React.createElement("div",{style:{color:"#8a8474",fontSize:12}},"\u05D0\u05D9\u05DF \u05D7\u05D5\u05D1\u05D5\u05EA"):topDebtors.map(m=>React.createElement("div",{key:m.id,style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #f0ede6",fontSize:12,cursor:"pointer"},onClick:()=>setMemberDetail(m.id)},React.createElement("span",null,m.name),React.createElement("span",{style:{color:"#a33620",fontWeight:600}},fc(m.debt))))),React.createElement("div",{style:S.card},React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:8}},"\u05D4\u05DB\u05E0\u05E1\u05D5\u05EA \u05DC\u05E4\u05D9 \u05DE\u05D5\u05E2\u05D3"),occasionStats.length===0?React.createElement("div",{style:{color:"#8a8474",fontSize:12}},"\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD"):occasionStats.map(o=>React.createElement("div",{key:o.id,style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #f0ede6",fontSize:12}},React.createElement("span",null,o.name),React.createElement("div",null,React.createElement("span",{style:{color:"#2d6b1f"}},fc(o.income)),o.debt>0&&React.createElement("span",{style:{color:"#a33620",marginRight:6}}," ("+fc(o.debt)+")")))))),React.createElement("div",{style:{marginTop:10,display:"flex",justifyContent:"center",gap:8}},React.createElement("button",{style:S.btnOutline,onClick:()=>setShowExport(true)},"\u05D9\u05D9\u05E6\u05D5\u05D0 \u05DC\u05D0\u05E7\u05E1\u05DC")))}
+
+  function MembersTab(){const filtered=members.filter(m=>m.name.includes(search)||m.phone?.includes(search)).sort((a,b)=>a.name.localeCompare(b.name,"he"));return React.createElement("div",null,React.createElement("div",{style:{display:"flex",gap:6,marginBottom:12}},React.createElement("input",{style:{...S.input,flex:1},placeholder:"\u05D7\u05D9\u05E4\u05D5\u05E9...",value:search,onChange:e=>setSearch(e.target.value)}),React.createElement("button",{style:S.btn,onClick:()=>setShowAddMember(true)},"+ \u05D7\u05D1\u05E8")),filtered.length===0?React.createElement("div",{style:{textAlign:"center",color:"#8a8474",padding:24}},members.length===0?"\u05D0\u05D9\u05DF \u05D7\u05D1\u05E8\u05D9\u05DD":"\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5"):filtered.map(m=>{const st=getMemberStats(m.id);return React.createElement("div",{key:m.id,style:{...S.card,cursor:"pointer"},onClick:()=>setMemberDetail(m.id)},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:14,fontWeight:600}},m.name),m.phone&&React.createElement("div",{style:{fontSize:11,color:"#8a8474"}},m.phone)),React.createElement("div",{style:{display:"flex",gap:10,alignItems:"center"}},st.debt>0&&React.createElement("div",{style:{textAlign:"center"}},React.createElement("div",{style:{fontSize:9,color:"#a33620"}},"\u05D7\u05D5\u05D1"),React.createElement("div",{style:{fontSize:13,fontWeight:700,color:"#a33620"}},fc(st.debt))),st.paid>0&&React.createElement("div",{style:{textAlign:"center"}},React.createElement("div",{style:{fontSize:9,color:"#2d6b1f"}},"\u05E9\u05D5\u05DC\u05DD"),React.createElement("div",{style:{fontSize:13,fontWeight:700,color:"#2d6b1f"}},fc(st.paid))),React.createElement("button",{style:S.btnDanger,onClick:e=>{e.stopPropagation();deleteMember(m.id)}},"\u05DE\u05D7\u05E7"))))}))}
+
+  function PurchasesTab(){return React.createElement("div",null,React.createElement("div",{className:"filter-row",style:{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}},React.createElement("select",{style:{...S.select,flex:"1 1 110px"},value:filterMember,onChange:e=>setFilterMember(e.target.value)},React.createElement("option",{value:""},"\u05DB\u05DC \u05D4\u05D7\u05D1\u05E8\u05D9\u05DD"),members.sort((a,b)=>a.name.localeCompare(b.name,"he")).map(m=>React.createElement("option",{key:m.id,value:m.id},m.name))),React.createElement("select",{style:{...S.select,flex:"1 1 110px"},value:filterOccasion,onChange:e=>setFilterOccasion(e.target.value)},React.createElement("option",{value:""},"\u05DB\u05DC \u05D4\u05DE\u05D5\u05E2\u05D3\u05D9\u05DD"),occasions.map(o=>React.createElement("option",{key:o.id,value:o.id},o.name))),React.createElement("select",{style:{...S.select,flex:"0 0 90px"},value:filterPaid,onChange:e=>setFilterPaid(e.target.value)},React.createElement("option",{value:"all"},"\u05D4\u05DB\u05DC"),React.createElement("option",{value:"paid"},"\u05E9\u05D5\u05DC\u05DD"),React.createElement("option",{value:"partial"},"\u05D7\u05DC\u05E7\u05D9"),React.createElement("option",{value:"unpaid"},"\u05D7\u05D5\u05D1")),React.createElement("button",{style:S.btn,onClick:()=>setShowAddPurchase(true)},"+ \u05E8\u05DB\u05D9\u05E9\u05D4")),React.createElement("div",{style:{fontSize:11,color:"#8a8474",marginBottom:8}},filteredPurchases.length+" \u05E8\u05DB\u05D9\u05E9\u05D5\u05EA"),filteredPurchases.length===0?React.createElement("div",{style:{textAlign:"center",color:"#8a8474",padding:24}},"\u05D0\u05D9\u05DF"):filteredPurchases.map(p=>{const st=getStatus(p.id);const bal=getBalance(p.id);const pd=Math.min(p.amount,getPaidAmount(p.id));return React.createElement("div",{key:p.id,style:S.card},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6}},React.createElement("div",{style:{flex:1,minWidth:140}},React.createElement("div",{style:{fontSize:13,fontWeight:600}},mn(p.memberId)),React.createElement("div",{style:{fontSize:11,color:"#8a8474"}},on(p.occasionId)+" \u00B7 "+p.date+(p.description?" \u00B7 "+p.description:""))),React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},React.createElement("div",{style:{textAlign:"left"}},React.createElement("div",{style:{fontSize:15,fontWeight:700}},fc(p.amount)),pd>0&&bal>0&&React.createElement("div",{style:{fontSize:10,color:"#b8730a"}},"\u05E9\u05D5\u05DC\u05DD "+fc(pd)+" | \u05D9\u05EA\u05E8\u05D4 "+fc(bal))),React.createElement("span",{style:S.badge(st)},st))),React.createElement("div",{style:{display:"flex",gap:6,marginTop:6}},React.createElement("button",{style:{...S.btnSm,background:bal>0?"#2c2a25":"#8a8474"},onClick:()=>setShowPayment(p)},bal>0?"\u05E9\u05DC\u05DD":"\u05E4\u05E8\u05D8\u05D9\u05DD"),React.createElement("button",{style:{...S.btnOutline,padding:"4px 10px",fontSize:10},onClick:()=>setEditingPurchase(p)},"\u05E2\u05E8\u05D9\u05DB\u05D4"),React.createElement("button",{style:{...S.btnDanger,fontSize:10},onClick:()=>deletePurchase(p.id)},"\u05DE\u05D7\u05E7")))}))}
+
+  function ExpensesTab(){const sorted=(expenses||[]).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));const byCat={};sorted.forEach(e=>{if(!byCat[e.category])byCat[e.category]=0;byCat[e.category]+=e.amount});return React.createElement("div",null,React.createElement("div",{style:{display:"flex",gap:6,marginBottom:12,justifyContent:"space-between"}},React.createElement("button",{style:S.btn,onClick:()=>setShowAddExpense(true)},"+ \u05D4\u05D5\u05E6\u05D0\u05D4"),React.createElement("div",{style:{fontSize:13,fontWeight:600,alignSelf:"center"}},"\u05E1\u05D4\u05F4\u05DB: "+fc(totalExpenses))),Object.keys(byCat).length>0&&React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}},Object.entries(byCat).map(([c,a])=>React.createElement("div",{key:c,style:{background:"#f5f3ef",borderRadius:8,padding:"5px 10px",fontSize:11}},React.createElement("span",{style:{fontWeight:600}},c)," "+fc(a)))),sorted.length===0?React.createElement("div",{style:{textAlign:"center",color:"#8a8474",padding:24}},"\u05D0\u05D9\u05DF \u05D4\u05D5\u05E6\u05D0\u05D5\u05EA"):sorted.map(e=>React.createElement("div",{key:e.id,style:S.card},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:13,fontWeight:600}},e.description||e.category),React.createElement("div",{style:{fontSize:11,color:"#8a8474"}},e.category+" \u00B7 "+e.date)),React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},React.createElement("div",{style:{fontSize:15,fontWeight:700,color:"#2a5ea3"}},fc(e.amount)),React.createElement("button",{style:S.btnDanger,onClick:()=>deleteExpense(e.id)},"\u05DE\u05D7\u05E7"))))))}
+
+  function OccasionsTab(){return React.createElement("div",null,React.createElement("div",{style:{marginBottom:12}},React.createElement("button",{style:S.btn,onClick:()=>setShowAddOccasion(true)},"+ \u05DE\u05D5\u05E2\u05D3")),occasions.length===0?React.createElement("div",{style:{textAlign:"center",color:"#8a8474",padding:24}},"\u05D0\u05D9\u05DF \u05DE\u05D5\u05E2\u05D3\u05D9\u05DD"):occasions.map(o=>{const op=purchases.filter(p=>p.occasionId===o.id);const inc=op.reduce((s,p)=>s+Math.min(p.amount,getPaidAmount(p.id)),0);const debt=op.reduce((s,p)=>s+getBalance(p.id),0);return React.createElement("div",{key:o.id,style:S.card},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:14,fontWeight:600}},o.name),React.createElement("div",{style:{fontSize:11,color:"#8a8474"}},op.length+" \u05E8\u05DB\u05D9\u05E9\u05D5\u05EA")),React.createElement("div",{style:{display:"flex",gap:12,alignItems:"center"}},inc>0&&React.createElement("div",{style:{textAlign:"center"}},React.createElement("div",{style:{fontSize:9,color:"#2d6b1f"}},"\u05D4\u05DB\u05E0\u05E1\u05D5\u05EA"),React.createElement("div",{style:{fontSize:13,fontWeight:700,color:"#2d6b1f"}},fc(inc))),debt>0&&React.createElement("div",{style:{textAlign:"center"}},React.createElement("div",{style:{fontSize:9,color:"#a33620"}},"\u05D7\u05D5\u05D1"),React.createElement("div",{style:{fontSize:13,fontWeight:700,color:"#a33620"}},fc(debt))),React.createElement("button",{style:S.btnDanger,onClick:()=>deleteOccasion(o.id)},"\u05DE\u05D7\u05E7"))))}))}
+
+  const syncColors={local:"#8a8474",loading:"#e8a530",saving:"#e8a530",synced:"#4caf50",error:"#e53935"};
+  const syncText={local:"\u05DE\u05E7\u05D5\u05DE\u05D9",loading:"\u05D8\u05D5\u05E2\u05DF...",saving:"\u05E9\u05D5\u05DE\u05E8...",synced:"\u05DE\u05E1\u05D5\u05E0\u05DB\u05E8\u05DF",error:"\u05E9\u05D2\u05D9\u05D0\u05D4"};
+
+  return React.createElement("div",null,
+    React.createElement("div",{className:"sync-bar"},
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6}},
+        React.createElement("span",{className:"sync-dot",style:{background:syncColors[syncStatus]}}),
+        React.createElement("span",null,syncText[syncStatus]),
+        lastSync&&React.createElement("span",{style:{color:"rgba(255,255,255,0.5)"}},lastSync.toLocaleTimeString("he-IL",{hour:"2-digit",minute:"2-digit"}))
+      ),
+      React.createElement("div",{style:{display:"flex",gap:6}},
+        React.createElement("button",{onClick:doSync},"\u05E1\u05E0\u05DB\u05E8\u05DF"),
+        React.createElement("button",{onClick:()=>setShowCloudSetup(true)},"\u2699 \u05D4\u05D2\u05D3\u05E8\u05D5\u05EA"))
+    ),
+    React.createElement("div",{style:S.app},
+      React.createElement("div",{style:S.header},React.createElement("div",{style:S.title},"\u05E0\u05D9\u05D4\u05D5\u05DC \u05D4\u05DB\u05E0\u05E1\u05D5\u05EA \u05D1\u05D9\u05EA \u05D4\u05DB\u05E0\u05E1\u05EA"),React.createElement("div",{style:S.subtitle},"\u05E8\u05DB\u05D9\u05E9\u05D5\u05EA \u00B7 \u05EA\u05E9\u05DC\u05D5\u05DE\u05D9\u05DD \u00B7 \u05D4\u05D5\u05E6\u05D0\u05D5\u05EA \u00B7 \u05D3\u05D5\u05D7\u05D5\u05EA")),
+      React.createElement("div",{style:S.tabs},TABS.map(t=>React.createElement("button",{key:t.id,style:S.tab(tab===t.id),onClick:()=>setTab(t.id)},t.icon+" "+t.label))),
+      tab==="dashboard"&&React.createElement(Dashboard),
+      tab==="members"&&React.createElement(MembersTab),
+      tab==="purchases"&&React.createElement(PurchasesTab),
+      tab==="expenses"&&React.createElement(ExpensesTab),
+      tab==="occasions"&&React.createElement(OccasionsTab),
+      showAddMember&&React.createElement(AddMemberModal),
+      showAddPurchase&&React.createElement(AddPurchaseModal),
+      showAddOccasion&&React.createElement(AddOccasionModal),
+      showAddExpense&&React.createElement(AddExpenseModal),
+      showExport&&React.createElement(ExportModal),
+      showCloudSetup&&React.createElement(CloudSetupModal),
+      editingPurchase&&React.createElement(EditPurchaseModal,{purchase:editingPurchase}),
+      showPayment&&React.createElement(PaymentModal,{purchase:showPayment}),
+      memberDetail&&React.createElement(MemberDetailModal,{memberId:memberDetail})
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
